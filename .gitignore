@@ -60,3 +60,4 @@ Session.vim
 # rope ignores
 .ropeproject
 nbproject
+.idea

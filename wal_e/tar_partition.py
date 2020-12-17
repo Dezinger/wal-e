@@ -44,7 +44,9 @@ import collections
 import errno
 import os
 import tarfile
+import sys
 
+from wal_e import files
 from wal_e import log_help
 from wal_e import copyfileobj
 from wal_e import pipebuf
@@ -56,7 +58,9 @@ logger = log_help.WalELogger(__name__)
 PG_CONF = ('postgresql.conf',
            'pg_hba.conf',
            'recovery.conf',
-           'pg_ident.conf')
+           'recovery.done',
+           'pg_ident.conf',
+           'promote')
 
 
 class StreamPadFileObj(object):
@@ -86,7 +90,7 @@ class StreamPadFileObj(object):
         ret = self.underlying_fp.read(max_readable)
         lenret = len(ret)
         self.pos += lenret
-        return ret + '\0' * (max_readable - lenret)
+        return ret + b'\0' * (max_readable - lenret)
 
     def close(self):
         return self.underlying_fp.close()
@@ -130,6 +134,7 @@ class TarBadPathError(Exception):
         self.offensive_path = offensive_path
 
         Exception.__init__(self, *args, **kwargs)
+
 
 ExtendedTarInfo = collections.namedtuple('ExtendedTarInfo',
                                          'submitted_path tarinfo')
@@ -209,12 +214,16 @@ def cat_extract(tar, member, targetpath):
             else:
                 raise
 
-    with open(targetpath, 'wb') as dest:
-        with pipeline.get_cat_pipeline(pipeline.PIPE, dest) as pl:
+    with files.DeleteOnError(targetpath) as dest:
+        with pipeline.get_cat_pipeline(pipeline.PIPE, dest.f) as pl:
             fp = tar.extractfile(member)
             copyfileobj.copyfileobj(fp, pl.stdin)
 
-    tar.chown(member, targetpath)
+    if sys.version_info < (3, 5):
+        tar.chown(member, targetpath)
+    else:
+        tar.chown(member, targetpath, False)
+
     tar.chmod(member, targetpath)
     tar.utime(member, targetpath)
 
@@ -233,7 +242,7 @@ class TarPartition(list):
                                       et_info.tarinfo.size) as f:
                     tar.addfile(et_info.tarinfo, f)
 
-        except EnvironmentError, e:
+        except EnvironmentError as e:
             if (e.errno == errno.ENOENT and
                 e.filename == et_info.submitted_path):
                 # log a NOTICE/INFO that the file was unlinked.
@@ -272,19 +281,27 @@ class TarPartition(list):
             assert not member.name.startswith('/')
             relpath = os.path.join(dest_path, member.name)
 
+            # Workaround issue with tar handling of symlink, see:
+            # https://bugs.python.org/issue12800
+            if member.issym():
+                target_path = os.path.join(dest_path, member.name)
+                try:
+                    os.symlink(member.linkname, target_path)
+                except OSError as e:
+                    if e.errno == errno.EEXIST:
+                        os.remove(target_path)
+                        os.symlink(member.linkname, target_path)
+                    else:
+                        raise
+                continue
+
             if member.isreg() and member.size >= pipebuf.PIPE_BUF_BYTES:
                 cat_extract(tar, member, relpath)
             else:
                 tar.extract(member, path=dest_path)
 
-            if member.issym():
-                # It does not appear possible to fsync a symlink, or
-                # so it seems, as there is no portable way to open()
-                # one to get a fd to run fsync on.
-                pass
-            else:
-                filename = os.path.realpath(relpath)
-                extracted_files.append(filename)
+            filename = os.path.realpath(relpath)
+            extracted_files.append(filename)
 
             # avoid accumulating an unbounded list of strings which
             # could be quite large for a large database
@@ -374,7 +391,7 @@ def _segmentation_guts(root, file_paths, max_partition_size):
                         file_path, arcname=file_path[len(root):]),
                     submitted_path=file_path)
 
-            except EnvironmentError, e:
+            except EnvironmentError as e:
                 if (e.errno == errno.ENOENT and
                     e.filename == file_path):
                     # log a NOTICE/INFO that the file was unlinked.
@@ -383,6 +400,7 @@ def _segmentation_guts(root, file_paths, max_partition_size):
                     logger.debug(
                         msg='tar member additions skipping an unlinked file',
                         detail='Skipping {0}.'.format(et_info.submitted_path))
+                    continue
                 else:
                     raise
 
@@ -426,6 +444,12 @@ def _segmentation_guts(root, file_paths, max_partition_size):
         yield partition
 
 
+def do_not_descend(root, name, dirnames, matches):
+    if name in dirnames:
+        dirnames.remove(name)
+        matches.append(os.path.join(root, name))
+
+
 def partition(pg_cluster_dir):
     def raise_walk_error(e):
         raise e
@@ -449,26 +473,26 @@ def partition(pg_cluster_dir):
         # upload completes.
         matches.append(root)
 
-        # Do not capture any WAL files, although we do want to
-        # capture the WAL directory or symlink
-        if is_cluster_toplevel and 'pg_xlog' in dirnames:
-            dirnames.remove('pg_xlog')
-            matches.append(os.path.join(root, 'pg_xlog'))
+        if is_cluster_toplevel:
+            for name in ['pg_xlog', 'pg_log', 'pg_replslot', 'pg_wal']:
+                do_not_descend(root, name, dirnames, matches)
 
-        # Do not capture any TEMP Space files, although we do want to
-        # capture the directory name or symlink
-        if 'pgsql_tmp' in dirnames:
-                dirnames.remove('pgsql_tmp')
-                matches.append(os.path.join(root, 'pgsql_tmp'))
-        if 'pg_stat_tmp' in dirnames:
-                dirnames.remove('pg_stat_tmp')
-                matches.append(os.path.join(root, 'pg_stat_tmp'))
+        # Do not capture any TEMP Space files, although we do want to capture
+        # the directory name or symlink
+        #
+        # Also do not capture ".wal-e" directories which also contain temporary
+        # working space.
+        for name in ['pgsql_tmp', 'pg_stat_tmp', '.wal-e']:
+            do_not_descend(root, name, dirnames, matches)
 
-        # Do not capture ".wal-e" directories which also contain
-        # temporary working space.
-        if '.wal-e' in dirnames:
-            dirnames.remove('.wal-e')
-            matches.append(os.path.join(root, '.wal-e'))
+        # Do not capture lost+found directories, generated by fsck of
+        # some file systems, and often only accessible by root,
+        # unhelpfully causing a permission error.
+        #
+        # And, do not bother creating it on restore either, i.e. it is
+        # not part of "matches".
+        if 'lost+found' in dirnames:
+            dirnames.remove('lost+found')
 
         for filename in filenames:
             if is_cluster_toplevel and filename in ('postmaster.pid',

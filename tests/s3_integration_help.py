@@ -7,6 +7,11 @@ from boto import sts
 from boto.s3.connection import Location
 from wal_e.blobstore import s3
 from wal_e.blobstore.s3 import calling_format
+from wal_e.cmd import parse_boolean_envvar
+
+
+def bucket_name_mangle(bn, delimiter='-'):
+    return bn + delimiter + os.getenv('AWS_ACCESS_KEY_ID').lower()
 
 
 def no_real_s3_credentials():
@@ -14,7 +19,8 @@ def no_real_s3_credentials():
 
     Phrased in the negative to make it read better with 'skipif'.
     """
-    if os.getenv('WALE_S3_INTEGRATION_TESTS') != 'TRUE':
+    if parse_boolean_envvar(os.getenv(
+            'WALE_S3_INTEGRATION_TESTS')) is not True:
         return True
 
     for e_var in ('AWS_ACCESS_KEY_ID',
@@ -31,13 +37,13 @@ def prepare_s3_default_test_bucket():
     if no_real_s3_credentials():
         assert False
 
-    bucket_name = 'waletdefwuy' + os.getenv('AWS_ACCESS_KEY_ID').lower()
+    bucket_name = bucket_name_mangle('waletdefwuy')
 
     creds = s3.Credentials(os.getenv('AWS_ACCESS_KEY_ID'),
                            os.getenv('AWS_SECRET_ACCESS_KEY'),
                            os.getenv('AWS_SECURITY_TOKEN'))
 
-    cinfo = calling_format.from_store_name(bucket_name)
+    cinfo = calling_format.from_store_name(bucket_name, region='us-west-1')
     conn = cinfo.connect(creds)
 
     def _clean():
@@ -46,7 +52,7 @@ def prepare_s3_default_test_bucket():
 
     try:
         conn.create_bucket(bucket_name, location=Location.USWest)
-    except boto.exception.S3CreateError, e:
+    except boto.exception.S3CreateError as e:
         if e.status == 409:
             # Conflict: bucket already present.  Re-use it, but
             # clean it out first.
@@ -63,7 +69,10 @@ def prepare_s3_default_test_bucket():
 @pytest.fixture(scope='session')
 def default_test_bucket():
     if not no_real_s3_credentials():
-        return prepare_s3_default_test_bucket()
+        os.putenv('AWS_REGION', 'us-east-1')
+        ret = prepare_s3_default_test_bucket()
+        os.unsetenv('AWS_REGION')
+        return ret
 
 
 def boto_supports_certs():
@@ -119,7 +128,7 @@ def _delete_keys(bucket, keys):
             try:
                 k = boto.s3.connection.Key(bucket, name)
                 bucket.delete_key(k)
-            except boto.exception.S3ResponseError, e:
+            except boto.exception.S3ResponseError as e:
                 if e.status == 404:
                     # Key is already not present.  Continue the
                     # deletion iteration.
@@ -131,6 +140,7 @@ def _delete_keys(bucket, keys):
 
 
 def apathetic_bucket_delete(bucket_name, keys, *args, **kwargs):
+    kwargs.setdefault('host', 's3.amazonaws.com')
     conn = boto.s3.connection.S3Connection(*args, **kwargs)
     bucket = conn.lookup(bucket_name)
 
@@ -140,7 +150,7 @@ def apathetic_bucket_delete(bucket_name, keys, *args, **kwargs):
 
     try:
         conn.delete_bucket(bucket_name)
-    except boto.exception.S3ResponseError, e:
+    except boto.exception.S3ResponseError as e:
         if e.status == 404:
             # If the bucket is already non-existent, then the bucket
             # need not be destroyed from a prior test run.
@@ -161,7 +171,7 @@ def insistent_bucket_delete(conn, bucket_name, keys):
     while True:
         try:
             conn.delete_bucket(bucket_name)
-        except boto.exception.S3ResponseError, e:
+        except boto.exception.S3ResponseError as e:
             if e.status == 404:
                 # Create not yet visible, but it just happened above:
                 # keep trying.  Potential consistency.
@@ -176,7 +186,7 @@ def insistent_bucket_create(conn, bucket_name, *args, **kwargs):
     while True:
         try:
             bucket = conn.create_bucket(bucket_name, *args, **kwargs)
-        except boto.exception.S3CreateError, e:
+        except boto.exception.S3CreateError as e:
             if e.status == 409:
                 # Conflict; bucket already created -- probably means
                 # the prior delete did not process just yet.

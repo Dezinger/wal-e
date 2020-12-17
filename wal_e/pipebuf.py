@@ -40,7 +40,7 @@ def _configure_buffer_sizes():
             # or small restrain it to sensible values.
             OS_PIPE_SZ = min(int(f.read()), 1024 * 1024)
             PIPE_BUF_BYTES = max(OS_PIPE_SZ, PIPE_BUF_BYTES)
-    except:
+    except Exception:
         pass
 
 
@@ -87,7 +87,7 @@ class ByteDeque(object):
         out = bytearray(n)
         remaining = n
         while remaining > 0:
-            part = self._dq.popleft()
+            part = memoryview(self._dq.popleft())
             delta = remaining - len(part)
             offset = n - remaining
 
@@ -99,8 +99,8 @@ class ByteDeque(object):
                 remaining = delta
             elif delta < 0:
                 cleave = len(part) + delta
-                out[offset:] = buffer(part, 0, cleave)
-                self._dq.appendleft(buffer(part, cleave))
+                out[offset:] = part[:cleave]
+                self._dq.appendleft(part[cleave:])
                 remaining = 0
             else:
                 assert False
@@ -130,14 +130,14 @@ class NonBlockBufferedReader(object):
         try:
             chunk = os.read(self._fd, sz)
             self._bd.add(chunk)
-        except EnvironmentError, e:
+        except EnvironmentError as e:
             if e.errno in [errno.EAGAIN, errno.EWOULDBLOCK]:
                 assert chunk is None
                 gevent.socket.wait_read(self._fd)
             else:
                 raise
 
-        self.got_eof = (chunk == '')
+        self.got_eof = (chunk == b'')
 
     def read(self, size=None):
         # Handle case of "read all".
@@ -185,15 +185,26 @@ class NonBlockBufferedReader(object):
             assert False
 
     def close(self):
-        # Invalidate state.
-        self._fd = -1
-        del self._bd
+        if self.closed:
+            return
 
         # Delegate close to self._fp -- it'll try to do it during its
         # destructor which is why delegation is used rather than
         # manipulation of the fd directly.
         self._fp.close()
-        del self._fp
+        try:
+            del self._fp
+        except AttributeError:
+            pass
+
+        try:
+            del self._bd
+        except AttributeError:
+            pass
+
+        # Invalidate state and flag total completion of the close
+        # operation.
+        self._fd = -1
 
     def fileno(self):
         return self._fd
@@ -215,15 +226,15 @@ class NonBlockBufferedWriter(object):
 
     def _partial_flush(self, max_retain):
         byts = self._bd.get_all()
-        cursor = buffer(byts)
+        cursor = memoryview(byts)
 
         flushed = False
         while len(cursor) > max_retain:
             try:
                 n = os.write(self._fd, cursor)
                 flushed = True
-                cursor = buffer(cursor, n)
-            except EnvironmentError, e:
+                cursor = memoryview(cursor)[n:]
+            except EnvironmentError as e:
                 if e.errno in [errno.EAGAIN, errno.EWOULDBLOCK]:
                     gevent.socket.wait_write(self._fd)
                 else:
@@ -256,15 +267,26 @@ class NonBlockBufferedWriter(object):
         return self._fd
 
     def close(self):
-        # Invalidate state.
-        self._fd = -1
-        del self._bd
+        if self.closed:
+            return
 
         # Delegate close to self._fp -- it'll try to do it during its
         # destructor which is why delegation is used rather than
         # manipulation of the fd directly.
         self._fp.close()
-        del self._fp
+        try:
+            del self._fp
+        except AttributeError:
+            pass
+
+        try:
+            del self._bd
+        except AttributeError:
+            pass
+
+        # Invalidate state and flag total completion of the close
+        # operation.
+        self._fd = -1
 
     @property
     def closed(self):

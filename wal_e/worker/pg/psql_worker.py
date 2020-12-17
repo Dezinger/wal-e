@@ -1,5 +1,6 @@
 import csv
 import datetime
+import os
 
 from subprocess import PIPE
 
@@ -41,10 +42,14 @@ def psql_csv_run(sql_command, error_handler=None):
     csv_query = ('COPY ({query}) TO STDOUT WITH CSV HEADER;'
                  .format(query=sql_command))
 
+    new_env = os.environ.copy()
+    new_env.setdefault('PGOPTIONS', '')
+    new_env["PGOPTIONS"] += ' --statement-timeout=0'
     psql_proc = popen_nonblock([PSQL_BIN, '-d', 'postgres', '--no-password',
-                                '-c', csv_query],
-                               stdout=PIPE)
-    stdout = psql_proc.communicate()[0]
+                                '--no-psqlrc', '-c', csv_query],
+                               stdout=PIPE,
+                               env=new_env)
+    stdout = psql_proc.communicate()[0].decode('utf-8')
 
     if psql_proc.returncode != 0:
         if error_handler is not None:
@@ -74,11 +79,31 @@ class PgBackupStatements(object):
 
     """
 
+    _WAL_NAME = None  # Lazy set to 'wal' or 'xlog' depending on version
+
     @staticmethod
     def _dict_transform(csv_reader):
         rows = list(csv_reader)
         assert len(rows) == 2, 'Expect header row and data row'
-        return dict(zip(*rows))
+        return dict(list(zip(*rows)))
+
+    @classmethod
+    def _wal_name(cls):
+        """
+        Sets and returns _WAL_NAME to 'wal' or 'xlog' depending on
+        version of postgres we are working with.
+
+        It is used for handling xlog -> wal rename in postgres v10
+
+        """
+        if cls._WAL_NAME is None:
+            version = cls._dict_transform(psql_csv_run(
+                    "SELECT current_setting('server_version_num')"))
+            if int(version['current_setting']) >= 100000:
+                cls._WAL_NAME = 'wal'
+            else:
+                cls._WAL_NAME = 'xlog'
+        return cls._WAL_NAME
 
     @classmethod
     def run_start_backup(cls):
@@ -103,8 +128,8 @@ class PgBackupStatements(object):
         return cls._dict_transform(psql_csv_run(
                 "SELECT file_name, "
                 "  lpad(file_offset::text, 8, '0') AS file_offset "
-                "FROM pg_xlogfile_name_offset("
-                "  pg_start_backup('{0}'))".format(label),
+                "FROM pg_{0}file_name_offset("
+                "  pg_start_backup('{1}'))".format(cls._wal_name(), label),
                 error_handler=handler))
 
     @classmethod
@@ -123,8 +148,9 @@ class PgBackupStatements(object):
         return cls._dict_transform(psql_csv_run(
                 "SELECT file_name, "
                 "  lpad(file_offset::text, 8, '0') AS file_offset "
-                "FROM pg_xlogfile_name_offset("
-                "  pg_stop_backup())", error_handler=handler))
+                "FROM pg_{0}file_name_offset("
+                "  pg_stop_backup())".format(cls._wal_name()),
+                error_handler=handler))
 
     @classmethod
     def pg_version(cls):

@@ -55,7 +55,7 @@ def configure(*args, **kwargs):
     def terrible_log_output(s):
         import sys
 
-        print >>sys.stderr, s
+        print(s, file=sys.stderr)
 
     places = [
         # Linux
@@ -80,11 +80,15 @@ def configure(*args, **kwargs):
     valid_facility = False
     if 'syslog' in log_destinations:
         facility, valid_facility = get_syslog_facility()
+
+        if not valid_facility:
+            terrible_log_output('invalid syslog facility level specified')
+
         try:
             # Add syslog output.
             HANDLERS.append(handlers.SysLogHandler(syslog_address,
                                                            facility=facility))
-        except EnvironmentError, e:
+        except EnvironmentError as e:
             if e.errno in [errno.EACCES, errno.ECONNREFUSED]:
                 message = ('wal-e: Could not set up syslog, '
                            'continuing anyway.  '
@@ -102,10 +106,6 @@ def configure(*args, **kwargs):
 
     # Default to INFO level logging.
     set_level(kwargs.get('level', logging.INFO))
-
-    if not valid_facility:
-        WalELogger(__name__).warning(
-            msg='invalid syslog facility level specified')
 
 
 def get_log_destinations():
@@ -152,8 +152,8 @@ class WalELogger(object):
             "time=%Y-%m-%dT%H:%M:%S.%f-00")
         pidEntry = "pid=" + str(os.getpid())
 
-        rest = sorted('='.join([unicode(k), unicode(v)])
-                      for (k, v) in d.items())
+        rest = sorted('='.join([str(k), str(v)])
+                      for (k, v) in list(d.items()))
 
         return ' '.join([timeEntry, pidEntry] + rest)
 

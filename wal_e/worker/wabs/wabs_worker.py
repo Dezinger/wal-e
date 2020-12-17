@@ -33,8 +33,8 @@ class TarPartitionLister(object):
             self.backup_info)
 
         blob_list = self.wabs_conn.list_blobs(self.layout.store_name(),
-                                              prefix='/' + prefix)
-        for blob in blob_list.blobs:
+                                              prefix=prefix)
+        for blob in blob_list:
             url = 'wabs://{container}/{name}'.format(
                 container=self.layout.store_name(), name=blob.name)
             name_last_part = blob.name.rsplit('/', 1)[-1]
@@ -60,13 +60,13 @@ class BackupFetcher(object):
     @retry()
     def fetch_partition(self, partition_name):
         part_abs_name = self.layout.basebackup_tar_partition(
-            self.backup_info, partition_name)
+            self.backup_info, partition_name).lstrip('/')
 
         logger.info(
             msg='beginning partition download',
             detail=('The partition being downloaded is {0}.'
                     .format(partition_name)),
-            hint='The absolute S3 key is {0}.'.format(part_abs_name))
+            hint='The absolute WABS blob is {0}.'.format(part_abs_name))
 
         url = 'wabs://{ctr}/{path}'.format(ctr=self.layout.store_name(),
                                            path=part_abs_name)
@@ -88,8 +88,8 @@ class BackupList(_BackupList):
 
     def _backup_list(self, prefix):
         blob_list = self.conn.list_blobs(self.layout.store_name(),
-                                         prefix='/' + prefix)
-        return blob_list.blobs
+                                         prefix=prefix)
+        return blob_list
 
 
 class DeleteFromContext(_DeleteFromContext):
@@ -107,5 +107,5 @@ class DeleteFromContext(_DeleteFromContext):
 
     def _backup_list(self, prefix):
         blob_list = self.conn.list_blobs(self.layout.store_name(),
-                                         prefix='/' + prefix)
-        return blob_list.blobs
+                                         prefix=prefix)
+        return blob_list

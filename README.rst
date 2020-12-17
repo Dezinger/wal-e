@@ -1,8 +1,8 @@
 WAL-E
 =====
-----------------------------------------
-Simple continuous archiving for Postgres
-----------------------------------------
+---------------------------------
+Continuous archiving for Postgres
+---------------------------------
 
 WAL-E is a program designed to perform continuous archiving of
 PostgreSQL WAL files and base backups.
@@ -19,69 +19,116 @@ so please feel free to submit those.
 .. _archives and subscription settings:
    https://groups.google.com/forum/#!forum/wal-e
 
+
+Installation
+------------
+
+If no up-to-date packages are available to you via a package manager,
+this command can work on most operating systems::
+
+  sudo python3 -m pip install wal-e[aws,azure,google,swift]
+
+You can omit storage services you do not wish to use from the above
+list.
+
+
 Primary Commands
 ----------------
 
-WAL-E has four key commands:
+WAL-E has these key commands:
 
 * backup-fetch
 * backup-push
 * wal-fetch
 * wal-push
+* `delete`_
+
+All of these operators work in a context of several environment
+variables that WAL-E reads.  The variables set depend on the storage
+provider being used, and are detailed below.
+
+WAL-E's organizing concept is the `PREFIX`.  Prefixes must be set
+uniquely for each *writing* database, and prefix all objects stored
+for a given database.  For example: ``s3://bucket/databasename``.
 
 Of these, the "push" operators send backup data to storage and "fetch"
-operators get backup data from storage.  "wal" operators send/get
-write ahead log, and "backup" send/get a hot backup of the base
-database that WAL segments can be applied to.
+operators get backup data from storage.
 
-All of these operators work in a context of three environment-variable
-based settings:
+``wal`` commands are called by Postgres's ``archive_command`` and
+``restore_command`` to fetch or pull write ahead log, and ``backup``
+commands are used to fetch or push a hot backup of the base database
+that WAL segments can be applied to.  Finally, the ``delete`` command
+is used to prune the archives as to retain a finite number of backups.
 
-* AWS_ACCESS_KEY_ID or WABS_ACCOUNT_NAME
-* AWS_SECRET_ACCESS_KEY or WABS_ACCESS_KEY
-* WALE_S3_PREFIX or WALE_WABS_PREFIX
+AWS S3 and Work-alikes
+''''''''''''''''''''''
 
-For Swift the following environment variables are needed:
+* WALE_S3_PREFIX (e.g. ``s3://bucket/path/optionallymorepath``)
+* AWS_ACCESS_KEY_ID
+* AWS_SECRET_ACCESS_KEY
+* AWS_REGION (e.g. ``us-east-1``)
 
+Optional:
+
+* WALE_S3_ENDPOINT: See `Manually specifying the S3 Endpoint`_
+* AWS_SECURITY_TOKEN: When using AWS STS
+* Pass ``--aws-instance-profile`` to gather credentials from the
+  Instance Profile.  See `Using AWS IAM Instance Profiles`.
+
+
+Azure Blob Store
+''''''''''''''''
+Example below is based on the following blob storage in Azure in the
+resource group ``resgroup`` :
+https://store1.blob.core.windows.net/container1/nextpath
+
+* WALE_WABS_PREFIX (e.g. ``wabs://container1/nextpath``)
+* WABS_ACCOUNT_NAME (e.g. ``store1``)
+* WABS_ACCESS_KEY (Use key1 from running ``azure storage account keys
+  list store1 --resource-group resgroup`` You will need to have the
+  Azure CLI installed for this to work.)
+* WABS_SAS_TOKEN (You only need this if you have not provided an
+  WABS_ACCESS_KEY)
+
+
+Google Storage
+''''''''''''''
+
+* WALE_GS_PREFIX (e.g. ``gs://bucket/path/optionallymorepath``)
+* GOOGLE_APPLICATION_CREDENTIALS
+
+Swift
+'''''
+
+* WALE_SWIFT_PREFIX (e.g. ``swift://container/path/optionallymorepath``)
 * SWIFT_AUTHURL
 * SWIFT_TENANT
 * SWIFT_USER
 * SWIFT_PASSWORD
-* WALE_SWIFT_PREFIX
 
-There are also these variables:
+Optional Variables:
 
-* SWIFT_AUTH_VERSION which defaults to 2. Some object stores such as
-  Softlayer require version 1.
-* SWIFT_ENDPOINT_TYPE defaults to publicURL, this may be set to internalURL on
-  object stores like Rackspace Cloud Files in order to use the internal
-  network.
+* SWIFT_AUTH_VERSION which defaults to ``2``. Some object stores such as
+  Softlayer require version ``1``.
+* SWIFT_ENDPOINT_TYPE defaults to ``publicURL``, this may be set to
+  ``internalURL`` on object stores like Rackspace Cloud Files in order
+  to use the internal network.
 
-With the exception of AWS_SECRET_ACCESS_KEY and WABS_ACCESS_KEY, all
-of these can be specified as arguments as well.  The AWS_* variables
-are the standard access-control keying system provided by Amazon,
-where the WABS_* are the standard access credentials defined by
-Windows Azure.
+File System
+'''''''''''
 
-The WALE_S3_PREFIX, WALE_WABS_PREFIX and WALE_SWIFT_PREFIX (_PREFIX)
-variables can be thought of as a context whereby this program operates
-on a single database cluster at a time.  Generally, for any one
-database the _PREFIX will be the same between all four operators.
-This context-driven approach attempts to help users avoid errors such
-as one database overwriting the WAL segments of another, as long as
-the _PREFIX is set uniquely for each database. Use whichever variable
-is appropriate for the store you are using.
+* WALE_FILE_PREFIX (e.g. ``file://localhost/backups/pg``)
 
 .. IMPORTANT::
-   Ensure that all servers have different _PREFIXes set.
-   Reuse of a value between two servers will likely cause unrecoverable
-   backups.
+   Ensure that all writing servers have different _PREFIXes set.
+   Reuse of a value between two, writing databases will likely cause
+   unrecoverable backups.
 
 
 Dependencies
 ------------
 
-* python (>= 2.6)
+* python (>= 3.4)
 * lzop
 * psql (>= 8.4)
 * pv
@@ -89,37 +136,16 @@ Dependencies
 This software also has Python dependencies: installing with ``pip``
 will attempt to resolve them:
 
-* gevent>=0.13.1
-* boto>=2.6.0
-* azure>=0.7.0
-* python-swiftclient>=1.8.0
-* python-keystoneclient>=0.4.2
-* argparse, if not on Python 2.7
+* gevent>=1.1.1
+* boto>=2.40.0
+* azure==3.0.0
+* google-cloud-storage>=1.4.0
+* python-swiftclient>=3.0.0
+* python-keystoneclient>=3.0.0
 
 It is possible to use WAL-E without the dependencies of back-end
 storage one does not use installed: the imports for those are only
 performed if the storage configuration demands their use.
-
-Backend Blob Store
-------------------
-
-The storage backend is determined by the defined _PREFIX. Prefixes with the
-scheme ``s3`` will be directed towards S3, those with the scheme ``wabs`` will
-be directed towards Windows Azure Blob Service, and those with the scheme
-``swift`` will be directed towards an OpenStack Swift installation.
-
-Example S3 Prefix:
-
-  s3://some-bucket/directory/or/whatever
-
-Example WABS Prefix:
-
-  wabs://some-container/directory/or/whatever
-
-Example OpenStack Swift Prefix:
-
-  swift://some-container/directory/or/whatever
-
 
 Examples
 --------
@@ -147,17 +173,16 @@ Push a base backup to Swift::
     SWIFT_PASSWORD="my_password" wal-e                         \
     backup-push /var/lib/my/database
 
+Push a base backup to Google Cloud Storage::
+
+  $ WALE_GS_PREFIX="gs://some-bucket/directory-or-whatever"     \
+    GOOGLE_APPLICATION_CREDENTIALS=...                          \
+    wal-e backup-push /var/lib/my/database
+
 It is generally recommended that one use some sort of environment
 variable management with WAL-E: working with it this way is less verbose,
 less prone to error, and less likely to expose secret information in
 logs.
-
-At this time, AWS_SECRET_ACCESS_KEY and WABS_ACCESS_KEY are the only
-secret values, and recording it frequently in logs is not recommended.
-The tool has never and should never accept secret information in argv
-to avoid process table security problems.  However, the user running
-PostgreSQL (typically 'postgres') must be able to run a program that
-can access this secret information, as part of its archive_command_.
 
 .. _archive_command: http://www.postgresql.org/docs/8.3/static/runtime-config-wal.html#GUC-ARCHIVE-COMMAND>
 
@@ -199,7 +224,7 @@ continuous archiving, one needs to edit ``postgresql.conf`` and
 restart the server.  The important settings to enable continuous
 archiving are related here::
 
-  wal_level = archive # hot_standby in 9.0 is also acceptable
+  wal_level = archive # hot_standby and logical in 9.x is also acceptable
   archive_mode = on
   archive_command = 'envdir /etc/wal-e.d/env wal-e wal-push %p'
   archive_timeout = 60
@@ -213,47 +238,12 @@ Every segment archived will be noted in the PostgreSQL log.
 
 A base backup (via ``backup-push``) can be uploaded at any time, but
 this must be done at least once in order to perform a restoration.  It
-must be done again if any WAL segment was not correctly uploaded:
-point in time recovery will not be able to continue if there are any
-gaps in the WAL segments.
+must be done again if you decided to skip archiving any WAL segments:
+replication will not be able to continue if there are any gaps in the
+stored WAL segments.
 
 .. _envdir: http://cr.yp.to/daemontools/envdir.html
 .. _daemontools: http://cr.yp.to/daemontools.html
-
-Pulling a base backup from S3::
-
-    $ sudo -u postgres bash -c                          \
-    "envdir /etc/wal-e.d/pull-env wal-e                 \
-    --s3-prefix=s3://some-bucket/directory/or/whatever  \
-    backup-fetch /var/lib/my/database LATEST"
-
-This command makes use of the "LATEST" pseudo-name for a backup, which
-queries S3 to find the latest complete backup.  Otherwise, a real name
-can be used::
-
-    $ sudo -u postgres bash -c                          \
-    "envdir /etc/wal-e.d/pull-env wal-e                 \
-    --s3-prefix=s3://some-bucket/directory/or/whatever  \
-    backup-fetch                                        \
-    /var/lib/my/database base_LONGWALNUMBER_POSITION_NUMBER"
-
-One can find the name of available backups via the experimental
-``backup-list`` operator, or using one's remote data store browsing
-program of choice, by looking at the ``PREFIX/basebackups_NNN/...``
-directory.
-
-It is also likely one will need to provide a ``recovery.conf`` file,
-as documented in the PostgreSQL manual, to recover the base backup, as
-WAL files will need to be downloaded to make the hot-backup taken with
-backup-push.  The WAL-E's ``wal-fetch`` subcommand is designed to be
-useful for this very purpose, as it may be used in a ``recovery.conf``
-file like this::
-
-    restore_command = 'envdir /etc/wal-e.d/env wal-e wal-fetch "%f" "%p"'
-
-.. WARNING::
-   If the archived database contains user defined tablespaces please review
-   the ``backup-fetch`` section below before utilizing that command.
 
 
 Primary Commands
@@ -274,47 +264,82 @@ WAL-E's tablespace restoration behavior.
 backup-fetch
 ''''''''''''
 
-There are two possible scenarios in which ``backup-fetch`` is run:
+Use ``backup-fetch`` to restore a base backup from storage.
 
-No User Defined Tablespaces Existed in Backup
-*********************************************
+This command makes use of the ``LATEST`` pseudo-backup-name to find a
+backup to download::
 
-If the archived database *did not* contain any user defined tablespaces
-at the time of backup it is safe to execute ``backup-fetch`` with no
-additional work by following previous examples.
+    $ envdir /etc/wal-e.d/fetch-env wal-e               \
+    --s3-prefix=s3://some-bucket/directory/or/whatever  \
+    backup-fetch /var/lib/my/database LATEST
 
-User Defined Tablespaces Existed in Backup
-******************************************
+Also allowed is naming a backup specifically as seen in
+``backup-list``, which can be useful for restoring older backups for
+the purposes of point in time recovery::
 
-If the archived database *did* contain user defined tablespaces at the
-time of backup there are specific behaviors of WAL-E you must be aware of:
+    $ envdir /etc/wal-e.d/fetch-env wal-e               \
+    --s3-prefix=s3://some-bucket/directory/or/whatever  \
+    backup-fetch                                        \
+    /var/lib/my/database base_LONGWALNUMBER_POSITION_NUMBER
 
-User-directed Restore
-"""""""""""""""""""""
+One will need to provide a `recovery.conf`_ file to recover WAL
+segments associated with the backup.  In short, `recovery.conf`_ needs
+to be created in the Postgres's data directory with content like::
 
-WAL-E expects that tablespace symlinks will be in place prior to a
-``backup-fetch`` run. This means prepare your target path by insuring
-``${PG_CLUSTER_DIRECTORY}/pg_tblspc`` contains all required symlinks
-before restoration time. If any expected symlink does not exist
-``backup-fetch`` will fail.
+    restore_command = 'envdir /etc/wal-e.d/env wal-e wal-fetch %f %p'
+    standby_mode = on
 
-Blind Restoration
-"""""""""""""""""
+.. _recovery.conf: https://www.postgresql.org/docs/current/static/recovery-config.html
 
-If you are unable to reproduce tablespace storage structures prior to
-running ``backup-fetch`` you can set the option flag ``--blind-restore``.
-This will direct WAL-E to skip the symlink verification process and place
-all data directly in the ``${PG_CLUSTER_DIRECTORY}/pg_tblspc`` path.
+A database with such a `recovery.conf` set will poll WAL-E storage for
+WAL indefinitely.  You can exit recovery by running `pg_ctl promote`_.
 
-Automatic Storage Directory and Symlink Creation
-""""""""""""""""""""""""""""""""""""""""""""""""
+If you wish to perform Point In Time Recovery (PITR) can add `recovery
+targets`_ to `recovery.conf`_, looking like this::
 
-Optionally, you can provide a restoration specification file to WAL-E
-using the ``backup-fetch`` ``--restore-spec RESTORE_SPEC`` option.
-This spec must be valid JSON and contain all contained tablespaces
-as well as the target storage path they require, and the symlink
-postgres expects for the tablespace. Here is an example for a
-cluster with a single tablespace::
+    recovery_target_time = '2017-02-01 19:58:55'
+
+There are several other ways to specify recovery target,
+e.g. transaction id.
+
+Regardless of recovery target, the result by default is Postgres will
+pause recovery at this time, allowing inspection before promotion.
+See `recovery targets`_ for details on how to customize what happens
+when the target criterion is reached.
+
+.. _pg_ctl promote: https://www.postgresql.org/docs/current/static/app-pg-ctl.html
+.. _recovery targets: https://www.postgresql.org/docs/current/static/recovery-target-settings.html
+
+Tablespace Support
+******************
+
+If and only if you are using Tablespaces, you will need to consider
+additional issues on how run ``backup-fetch``.  The options are:
+
+* User-directed Restore
+
+  WAL-E expects that tablespace symlinks will be in place prior to a
+  ``backup-fetch`` run. This means prepare your target path by
+  insuring ``${PG_CLUSTER_DIRECTORY}/pg_tblspc`` contains all required
+  symlinks before restoration time. If any expected symlink does not
+  exist ``backup-fetch`` will fail.
+
+* Blind Restore
+
+  If you are unable to reproduce tablespace storage structures prior
+  to running ``backup-fetch`` you can set the option flag
+  ``--blind-restore``.  This will direct WAL-E to skip the symlink
+  verification process and place all data directly in the
+  ``${PG_CLUSTER_DIRECTORY}/pg_tblspc`` path.
+
+* Restoration Specification
+
+  You can provide a restoration specification file to WAL-E using the
+  ``backup-fetch`` ``--restore-spec RESTORE_SPEC`` option.  This spec
+  must be valid JSON and contain all contained tablespaces as well as
+  the target storage path they require, and the symlink postgres
+  expects for the tablespace. Here is an example for a cluster with a
+  single tablespace::
 
     {
         "12345": {
@@ -326,8 +351,9 @@ cluster with a single tablespace::
         ],
     }
 
-Given this information WAL-E will create the data storage directory
-and symlink it appropriately in ``${PG_CLUSTER_DIRECTORY}/pg_tblspc``.
+  Given this information WAL-E will create the data storage directory
+  and symlink it appropriately in
+  ``${PG_CLUSTER_DIRECTORY}/pg_tblspc``.
 
 .. WARNING::
    ``"link"`` properties of tablespaces in the restore specification
@@ -582,8 +608,10 @@ One can instruct WAL-E to pool WAL segments together and send them in
 groups by passing the ``--pool-size`` parameter to ``wal-push``.  This
 can increase throughput significantly.
 
-As of version 0.7.x, ``--pool-size`` defaults to 8.
+As of version 1.x, ``--pool-size`` defaults to 32.
 
+Note: You can also use this parameter when calling ``backup-fetch``
+and ``backup-push`` (it defaults to 4).
 
 Using AWS IAM Instance Profiles
 '''''''''''''''''''''''''''''''
@@ -638,19 +666,13 @@ the development environment.  All additional dependencies of WAL-E are
 managed by tox_.  In addition, the coding conventions are checked by
 the tox_ configuration included with WAL-E.
 
-To run the tests, one need only run::
+To run the tests, run::
 
-  $ tox
-
-However, if one does not have both Python 2.6 and 2.7 installed
-simultaneously (WAL-E supports both and tests both), there will be
-errors in running tox_ as seen previously.  One can restrict the test
-to the Python of one's choice to avoid that::
-
-  $ tox -e py27
+  $ tox -e py35
 
 To run a somewhat more lengthy suite of integration tests that
-communicate with AWS S3, one might run tox_ like this::
+communicate with a real blob store account, one might run tox_ like
+this::
 
   $ WALE_S3_INTEGRATION_TESTS=TRUE      \
     AWS_ACCESS_KEY_ID=[AKIA...]         \
@@ -658,7 +680,9 @@ communicate with AWS S3, one might run tox_ like this::
     WALE_WABS_INTEGRATION_TESTS=TRUE    \
     WABS_ACCOUNT_NAME=[...]             \
     WABS_ACCESS_KEY=[...]               \
-    tox -- -n 8
+    WALE_GS_INTEGRATION_TESTS=TRUE      \
+    GOOGLE_APPLICATION_CREDENTIALS=[~/my-credentials.json] \
+    tox -e py35 -- -n 8
 
 Looking carefully at the above, notice the ``-n 8`` added the tox_
 invocation.  This ``-n 8`` is after a ``--`` that indicates to tox_
@@ -670,29 +694,9 @@ tests complete a small fraction of the time it would take otherwise.
 It is a design requirement of new tests that parallel execution not be
 sacrificed.
 
-The above invocation tests WAL-E with every test environment
-defined in ``tox.ini``.  When iterating, testing all of those is
-typically not a desirable use of time, so one can restrict the
-integration test to one virtual environment, in a combination of
-features seen in all the previous examples::
-
-  $ WALE_S3_INTEGRATION_TESTS=TRUE      \
-    AWS_ACCESS_KEY_ID=[AKIA...]         \
-    AWS_SECRET_ACCESS_KEY=[...]         \
-    WALE_WABS_INTEGRATION_TESTS=TRUE    \
-    WABS_ACCOUNT_NAME=[...]             \
-    WABS_ACCESS_KEY=[...]               \
-    tox -e py27 -- -n 8
-
 Coverage testing can be used by combining any of these using
 pytest-cov_, e.g.: ``tox -- --cov wal_e`` and
 ``tox -- --cov wal_e --cov-report html; see htmlcov/index.html``.
-
-Finally, the test framework used is pytest_.  If possible, do not
-submit Python unittest_ style tests: those tend to be more verbose and
-anemic in power; however, any automated testing is better than a lack
-thereof, so if you are familiar with unittest_, do not let the
-preference for pytest_ idiom be an impediment to submitting code.
 
 .. _tox: https://pypi.python.org/pypi/tox
 .. _pytest: https://pypi.python.org/pypi/pytest

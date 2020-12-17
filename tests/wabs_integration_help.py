@@ -1,5 +1,7 @@
-from azure.storage import BlobService
 import os
+
+from azure.storage.blob.blockblobservice import BlockBlobService
+from wal_e.cmd import parse_boolean_envvar
 
 
 def no_real_wabs_credentials():
@@ -7,7 +9,8 @@ def no_real_wabs_credentials():
 
     Phrased in the negative to make it read better with 'skipif'.
     """
-    if os.getenv('WALE_WABS_INTEGRATION_TESTS') != 'TRUE':
+    if parse_boolean_envvar(os.getenv(
+            'WALE_WABS_INTEGRATION_TESTS')) is not True:
         return True
 
     for e_var in ('WABS_ACCOUNT_NAME', 'WABS_ACCESS_KEY'):
@@ -18,7 +21,7 @@ def no_real_wabs_credentials():
 
 
 def apathetic_container_delete(container_name, *args, **kwargs):
-    conn = BlobService(*args, **kwargs)
+    conn = BlockBlobService(*args, **kwargs)
     conn.delete_container(container_name)
 
     return conn

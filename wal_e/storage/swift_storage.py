@@ -14,8 +14,9 @@ class SwiftBackupInfo(BackupInfo):
             bucket=self.layout.store_name(),
             path=self.layout.basebackup_sentinel(self))
 
-        data = json.loads(swift.uri_get_file(None, uri, conn=conn))
-        for k, v in data.items():
+        data = json.loads(
+            swift.uri_get_file(None, uri, conn=conn).decode("utf8"))
+        for k, v in list(data.items()):
             setattr(self, k, v)
 
         self._details_loaded = True

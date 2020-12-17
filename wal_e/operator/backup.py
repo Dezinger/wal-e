@@ -1,12 +1,13 @@
-import sys
-import os
-import json
+import errno
 import functools
 import gevent
 import gevent.pool
 import itertools
+import json
+import os
+import sys
 
-from cStringIO import StringIO
+from io import BytesIO
 from wal_e import log_help
 from wal_e import storage
 from wal_e import tar_partition
@@ -24,7 +25,7 @@ from wal_e.worker import (WalSegment,
 
 
 # File mode on directories created during restore process
-DEFAULT_DIR_MODE = 0700
+DEFAULT_DIR_MODE = 0o700
 # Provides guidence in object names as to the version of the file
 # structure.
 FILE_STRUCTURE_VERSION = storage.CURRENT_VERSION
@@ -52,7 +53,7 @@ class Backup(object):
         bl = self._backup_list(detail)
 
         # If there is no query, return an exhaustive list, otherwise
-        # find a backup instad.
+        # find a backup instead.
         if query is None:
             bl_iter = bl
         else:
@@ -129,7 +130,7 @@ class Backup(object):
             self._verify_restore_paths(backup_info.spec)
 
         connections = []
-        for i in xrange(pool_size):
+        for i in range(pool_size):
             connections.append(self.new_connection())
 
         partition_iter = self.worker.TarPartitionLister(
@@ -137,7 +138,7 @@ class Backup(object):
 
         assert len(connections) == pool_size
         fetchers = []
-        for i in xrange(pool_size):
+        for i in range(pool_size):
             fetchers.append(self.worker.BackupFetcher(
                 connections[i], self.layout, backup_info,
                 backup_info.spec['base_prefix'],
@@ -149,7 +150,7 @@ class Backup(object):
         for part_name in partition_iter:
             p.spawn(
                 self._exception_gather_guard(
-                    fetcher_cycle.next().fetch_partition),
+                    next(fetcher_cycle).fetch_partition),
                 part_name)
 
         p.join(raise_error=True)
@@ -220,26 +221,24 @@ class Backup(object):
             # directory that indicates that the base backup upload has
             # definitely run its course and also communicates what WAL
             # segments are needed to get to consistency.
-            sentinel_content = StringIO()
-            json.dump(
+            sentinel_content = json.dumps(
                 {'wal_segment_backup_stop':
                     stop_backup_info['file_name'],
                  'wal_segment_offset_backup_stop':
                     stop_backup_info['file_offset'],
                  'expanded_size_bytes': expanded_size_bytes,
-                 'spec': spec},
-                sentinel_content)
+                 'spec': spec})
 
             # XXX: should use the storage operators.
             #
             # XXX: distinguish sentinels by *PREFIX* not suffix,
             # which makes searching harder. (For the next version
             # bump).
-            sentinel_content.seek(0)
 
             uri_put_file(self.creds,
-                         uploaded_to + '_backup_stop_sentinel.json',
-                         sentinel_content, content_encoding='application/json')
+                             uploaded_to + '_backup_stop_sentinel.json',
+                             BytesIO(sentinel_content.encode("utf8")),
+                             content_type='application/json')
         else:
             # NB: Other exceptions should be raised before this that
             # have more informative results, it is intended that this
@@ -271,7 +270,7 @@ class Backup(object):
         seg_stream = WalSegment.from_ready_archive_status(xlog_dir)
         while started < concurrency:
             try:
-                other_segment = seg_stream.next()
+                other_segment = next(seg_stream)
             except StopIteration:
                 break
 
@@ -279,8 +278,17 @@ class Backup(object):
                 group.start(other_segment)
                 started += 1
 
-        # Wait for uploads to finish.
-        group.join()
+        try:
+            # Wait for uploads to finish.
+            group.join()
+        except EnvironmentError as e:
+            if e.errno == errno.ENOENT:
+                print(e)
+                raise UserException(
+                    msg='could not find file for wal-push',
+                    detail=('The operating system reported: {0} {1}'
+                            .format(e.strerror, repr(e.filename))))
+            raise
 
     def wal_restore(self, wal_name, wal_destination, prefetch_max):
         """
@@ -462,7 +470,7 @@ class Backup(object):
 
         # Reject tiny per-process rate limits.  They should be
         # rejected more nicely elsewhere.
-        assert per_process_limit > 0 or per_process_limit is None
+        assert per_process_limit is None or per_process_limit > 0
 
         total_size = 0
 
@@ -473,8 +481,8 @@ class Backup(object):
             detail=('Uploading to {extended_version_url}.'
                     .format(extended_version_url=extended_version_url)))
         uri_put_file(self.creds,
-                     extended_version_url, StringIO(version),
-                     content_encoding='text/plain')
+                     extended_version_url, BytesIO(version.encode("utf8")),
+                     content_type='text/plain')
 
         logger.info(msg='postgres version metadata upload complete')
 
@@ -510,7 +518,7 @@ class Backup(object):
         def wrapper(*args, **kwargs):
             try:
                 return fn(*args, **kwargs)
-            except UserException, e:
+            except UserException as e:
                 self.exceptions.append(e)
 
         return wrapper
@@ -556,7 +564,7 @@ class Backup(object):
 
 
 def start_prefetches(seg, pd, how_many):
-    import daemon
+    from wal_e import pep3143daemon as daemon
 
     split = sys.argv.index('wal-fetch')
     if split < 0:
@@ -571,7 +579,9 @@ def start_prefetches(seg, pd, how_many):
             continue
         elif os.fork() == 0:
             pd.create(fs)
-            with daemon.DaemonContext():
+            # gpg sends garbage to stdout if it has to reopen stderr
+            # so we just direct stderr to /dev/null instead
+            with daemon.DaemonContext(stderr=open(os.devnull, 'w')):
                 os.execvp(
                     sys.argv[0],
                     sys.argv[:split] + ['wal-prefetch'] + [pd.base, fs.name])

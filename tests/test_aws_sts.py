@@ -2,7 +2,7 @@ import pytest
 
 from boto import exception
 from boto.s3 import connection
-from cStringIO import StringIO
+from io import StringIO
 from wal_e.blobstore.s3 import Credentials
 from wal_e.blobstore.s3 import calling_format
 from wal_e.blobstore.s3 import uri_put_file
@@ -11,6 +11,7 @@ from wal_e.worker.s3 import BackupList
 
 from s3_integration_help import (
     FreshBucket,
+    bucket_name_mangle,
     make_policy,
     no_real_s3_credentials,
     sts_conn,
@@ -29,12 +30,12 @@ def test_simple_federation_token(sts_conn):
 
 
 @pytest.mark.skipif("no_real_s3_credentials()")
-def test_policy(sts_conn):
+def test_policy(sts_conn, monkeypatch):
     """Sanity checks for the intended ACLs of the policy"""
-
+    monkeypatch.setenv('AWS_REGION', 'us-west-1')
     # Use periods to force OrdinaryCallingFormat when using
     # calling_format.from_store_name.
-    bn = 'wal-e.sts.list.test'
+    bn = bucket_name_mangle('wal-e.sts.list.test')
     h = 's3-us-west-1.amazonaws.com'
     cf = connection.OrdinaryCallingFormat()
 
@@ -76,7 +77,7 @@ def test_policy(sts_conn):
 
         # Test the GET privilege.
         for key in prefix_fetched_keys:
-            assert key.get_contents_as_string() == 'wal-e test'
+            assert key.get_contents_as_string() == b'wal-e test'
 
         # Try a bogus listing outside the valid prefix.
         with pytest.raises(exception.S3ResponseError) as e:
@@ -95,8 +96,9 @@ def test_policy(sts_conn):
 
 
 @pytest.mark.skipif("no_real_s3_credentials()")
-def test_uri_put_file(sts_conn):
-    bn = 'wal-e.sts.uri.put.file'
+def test_uri_put_file(sts_conn, monkeypatch):
+    monkeypatch.setenv('AWS_REGION', 'us-west-1')
+    bn = bucket_name_mangle('wal-e.sts.uri.put.file')
     cf = connection.OrdinaryCallingFormat()
     policy_text = make_policy(bn, 'test-prefix', allow_get_location=True)
     fed = sts_conn.get_federation_token('wal-e-test-uri-put-file',
@@ -115,13 +117,14 @@ def test_uri_put_file(sts_conn):
                      StringIO('test-content'))
         k = connection.Key(fb.conn.get_bucket(bn, validate=False))
         k.name = key_path
-        assert k.get_contents_as_string() == 'test-content'
+        assert k.get_contents_as_string() == b'test-content'
 
 
 @pytest.mark.skipif("no_real_s3_credentials()")
-def test_backup_list(sts_conn):
+def test_backup_list(sts_conn, monkeypatch):
     """Test BackupList's compatibility with a test policy."""
-    bn = 'wal-e.sts.backup.list'
+    monkeypatch.setenv('AWS_REGION', 'us-west-1')
+    bn = bucket_name_mangle('wal-e.sts.backup.list')
     h = 's3-us-west-1.amazonaws.com'
     cf = connection.OrdinaryCallingFormat()
     fed = sts_conn.get_federation_token('wal-e-test-backup-list',

@@ -1,12 +1,14 @@
 import gevent
 import pytest
 from collections import namedtuple
-
-from azure.storage import BlobService
-from gevent import coros
+from fast_wait import fast_wait
+from gevent import lock
 
 from wal_e import exception
+from azure.storage.blob.blockblobservice import BlockBlobService
 from wal_e.worker.wabs import wabs_deleter
+
+assert fast_wait
 
 B = namedtuple('Blob', ['name'])
 
@@ -25,7 +27,7 @@ class ContainerDeleteKeysCollector(object):
 
         # Protect exc, since some paths test it and then use it, which
         # can run afoul race conditions.
-        self._exc_protect = coros.RLock()
+        self._exc_protect = lock.RLock()
 
     def inject(self, exc):
         self._exc_protect.acquire()
@@ -59,28 +61,12 @@ def collect(monkeypatch):
     """
 
     collect = ContainerDeleteKeysCollector()
-    monkeypatch.setattr(BlobService, 'delete_blob', collect)
+    monkeypatch.setattr(BlockBlobService, 'delete_blob', collect)
 
     return collect
 
 
-@pytest.fixture(autouse=True)
-def gevent_fastsleep(monkeypatch):
-    """Stub out gevent.sleep to only yield briefly.
-
-    In production one may want to wait a bit having no work to do to
-    avoid spinning, but during testing this adds quite a bit of time.
-    """
-    old_sleep = gevent.sleep
-
-    def fast_sleep(tm):
-        # Ignore time passed and just yield.
-        old_sleep(0.1)
-
-    monkeypatch.setattr(gevent, 'sleep', fast_sleep)
-
-
-def test_fast_sleep():
+def test_fast_wait():
     """Annoy someone who causes fast-sleep test patching to regress.
 
     Someone could break the test-only monkey-patching of gevent.sleep
@@ -101,7 +87,7 @@ def test_construction():
 def test_close_error():
     """Ensure that attempts to use a closed Deleter results in an error."""
 
-    d = wabs_deleter.Deleter(BlobService('test', 'ing'), 'test-container')
+    d = wabs_deleter.Deleter(BlockBlobService('test', 'ing'), 'test-container')
     d.close()
 
     with pytest.raises(exception.UserCritical):
@@ -112,7 +98,7 @@ def test_processes_one_deletion(collect):
     key_name = 'test-key-name'
     b = B(name=key_name)
 
-    d = wabs_deleter.Deleter(BlobService('test', 'ing'), 'test-container')
+    d = wabs_deleter.Deleter(BlockBlobService('test', 'ing'), 'test-container')
     d.delete(b)
     d.close()
 
@@ -126,7 +112,7 @@ def test_processes_many_deletions(collect):
     # Construct boto S3 Keys from the generated names and delete them
     # all.
     blobs = [B(name=key_name) for key_name in target]
-    d = wabs_deleter.Deleter(BlobService('test', 'ing'), 'test-container')
+    d = wabs_deleter.Deleter(BlockBlobService('test', 'ing'), 'test-container')
 
     for b in blobs:
         d.delete(b)
@@ -145,7 +131,7 @@ def test_retry_on_normal_error(collect):
     b = B(name=key_name)
 
     collect.inject(Exception('Normal error'))
-    d = wabs_deleter.Deleter(BlobService('test', 'ing'), 'test-container')
+    d = wabs_deleter.Deleter(BlockBlobService('test', 'ing'), 'test-container')
     d.delete(b)
 
     # Since delete_keys will fail over and over again, aborted_keys
@@ -176,7 +162,7 @@ def test_no_retry_on_keyboadinterrupt(collect):
         pass
 
     collect.inject(MarkedKeyboardInterrupt('SIGINT, probably'))
-    d = wabs_deleter.Deleter(BlobService('test', 'ing'), 'test-container')
+    d = wabs_deleter.Deleter(BlockBlobService('test', 'ing'), 'test-container')
 
     with pytest.raises(MarkedKeyboardInterrupt):
         d.delete(b)

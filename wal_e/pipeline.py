@@ -110,14 +110,17 @@ class Pipeline(object):
             if exc_type is not None or self._abort:
                 for command in self.commands:
                     command.wait()
+                    if command.stdout is not None:
+                        command.stdout.close()
+
             else:
                 for command in self.commands:
                     command.finish()
-        except:
+        except Exception:
             if exc_type:
                 # Re-raise inner exception rather than complaints during
                 # pipeline shutdown.
-                raise exc_type, exc_value, traceback
+                raise exc_type(exc_value).with_traceback(traceback)
             else:
                 raise
 
@@ -209,7 +212,7 @@ class PipeViewerRateLimitFilter(PipelineCommand):
     def __init__(self, rate_limit, stdin=PIPE, stdout=PIPE):
         PipelineCommand.__init__(
             self,
-            [PV_BIN, '--rate-limit=' + unicode(rate_limit)], stdin, stdout)
+            [PV_BIN, '--rate-limit=' + str(rate_limit)], stdin, stdout)
 
 
 class CatFilter(PipelineCommand):
@@ -227,14 +230,14 @@ class LZOCompressionFilter(PipelineCommand):
     """ Compress using LZO. """
     def __init__(self, stdin=PIPE, stdout=PIPE):
         PipelineCommand.__init__(
-            self, [LZOP_BIN, '--stdout'], stdin, stdout)
+            self, [LZOP_BIN, '-c'], stdin, stdout)
 
 
 class LZODecompressionFilter(PipelineCommand):
     """ Decompress using LZO. """
     def __init__(self, stdin=PIPE, stdout=PIPE):
         PipelineCommand.__init__(
-                self, [LZOP_BIN, '-d', '--stdout', '-'], stdin, stdout)
+                self, [LZOP_BIN, '-d', '-c', '-'], stdin, stdout)
 
 
 class GPGEncryptionFilter(PipelineCommand):

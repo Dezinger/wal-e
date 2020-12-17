@@ -1,12 +1,13 @@
 import socket
 import traceback
-from urlparse import urlparse
+from urllib.parse import urlparse
 
 import gevent
 
 from swiftclient.exceptions import ClientException
 
 from wal_e import log_help
+from wal_e import files
 from wal_e.blobstore.swift import calling_format
 from wal_e.pipeline import get_download_pipeline
 from wal_e.piper import PIPE
@@ -23,7 +24,7 @@ class SwiftKey(object):
         self.last_modified = last_modified
 
 
-def uri_put_file(creds, uri, fp, content_encoding=None):
+def uri_put_file(creds, uri, fp, content_type=None):
     assert fp.tell() == 0
     assert uri.startswith('swift://')
 
@@ -33,7 +34,7 @@ def uri_put_file(creds, uri, fp, content_encoding=None):
     conn = calling_format.connect(creds)
 
     conn.put_object(
-        container_name, url_tup.path, fp, content_type=content_encoding
+        container_name, url_tup.path, fp, content_type=content_type
     )
     # Swiftclient doesn't return us the total file size, we see how much of the
     # file swiftclient read in order to determine the file size.
@@ -83,8 +84,8 @@ def do_lzop_get(creds, uri, path, decrypt, do_retry=True):
         del tb
 
     def download():
-        with open(path, 'wb') as decomp_out:
-            with get_download_pipeline(PIPE, decomp_out, decrypt) as pl:
+        with files.DeleteOnError(path) as decomp_out:
+            with get_download_pipeline(PIPE, decomp_out.f, decrypt) as pl:
 
                 conn = calling_format.connect(creds)
 
@@ -108,6 +109,7 @@ def do_lzop_get(creds, uri, path, decrypt, do_retry=True):
                             hint=('This can be normal when Postgres is trying '
                                   'to detect what timelines are available '
                                   'during restoration.'))
+                        decomp_out.remove_regardless = True
                         return False
                     else:
                         raise
@@ -145,7 +147,7 @@ def write_and_return_error(uri, conn, stream):
         for chunk in response:
             stream.write(chunk)
         stream.flush()
-    except Exception, e:
+    except Exception as e:
         return e
     finally:
         stream.close()
